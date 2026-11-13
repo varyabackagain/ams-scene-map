@@ -247,17 +247,22 @@ function fit(){
 
 // ---------- state ----------
 const S = { lens: 'network', sel: null, cat: 'Ticketing', tool: null, seeds: new Set(), ag: false };
-const ourSeeds = () => core.filter(n => n.rel === 'Our contact').map(n => n.id);
+const ourSeeds = () => D.nodes.filter(n => n.rel === 'Our contact' && n.x !== undefined && !n.hidden).map(n => n.id);
 S.seeds = new Set(ourSeeds());
 
-function reach(seeds){
-  const d = new Map(); [...seeds].forEach(s => d.set(s, 0));
-  let fr = [...seeds];
-  for (let step = 1; step <= 2; step++){ const nx = [];
-    fr.forEach(id => adj.get(id).forEach(x => { if (!d.has(x)) { d.set(x, step); nx.push(x); } })); fr = nx; }
-  return d;
+const isMerch = n => isPromo(n) || n.type === 'Venue';
+const merchants = D.nodes.filter(n => isMerch(n) && n.status !== 'Closed');
+// 0 = we know them, 1 = one intro away, 2 = through a shared artist
+function tiers(seeds){
+  const t = new Map(), set = (id, v) => { const n = byId.get(id); if (n && isMerch(n) && n.status !== 'Closed' && !t.has(id)) t.set(id, v); };
+  seeds.forEach(id => { set(id, 0); orgsOf(id).forEach(o => set(o.id, 0)); });
+  const known = [...t.keys()];
+  known.forEach(id => adj.get(id).forEach(x => set(x, 1)));
+  seeds.forEach(id => { if (byId.get(id).type === 'Artist') adj.get(id).forEach(x => set(x, 1)); });
+  known.forEach(id => nb(id, n => n.type === 'Artist').forEach(a => adj.get(a.id).forEach(x => set(x, 2))));
+  return t;
 }
-const cover = (d, maxStep, pred = () => true) => core.filter(n => pred(n) && d.has(n.id) && d.get(n.id) <= maxStep).length;
+const within = t => merchants.filter(n => t.has(n.id) && t.get(n.id) <= 1).length;
 
 // tool ranking within a category, over promo groups + venues + artists
 function ranking(cat){
@@ -274,7 +279,7 @@ function paint(){
     signedTo(sel.id).forEach(x => focus.add(x.id)); roster(sel.id).forEach(x => focus.add(x.id));
     agentsOf(sel.id).forEach(x => focus.add(x.id)); orgsOf(sel.id).forEach(x => focus.add(x.id)); }
   const rk = ranking(S.cat), toolCol = new Map(rk.slice(0, 6).map(([t], i) => [t, PAL[i]]));
-  const rd = L === 'reach' ? reach(S.seeds) : null;
+  const rd = L === 'reach' ? tiers(S.seeds) : null;
   const shown = n => n.id === S.sel || (L === 'overlap' ? (isPromo(n) || n.type === 'Venue') : !(n.type === 'Agency' && !S.ag) && !(n.type === 'Key agent' && L !== 'reach'));
   const ovFocus = new Set(); if (sel){ ovFocus.add(sel.id); nb(sel.id, n => n.type === 'Venue' || isPromo(n)).forEach(x => ovFocus.add(x.id)); promos.forEach(p => { if (shared(sel.id, p.id).length) ovFocus.add(p.id); }); }
   nd.style('display', d => shown(d) ? null : 'none');
@@ -300,10 +305,9 @@ function paint(){
       if (S.tool) op = d.tools.some(t => t.name === S.tool) ? 1 : .12;
       if (sel && !focus.has(d.id)) op = Math.min(op, .14);
     } else if (L === 'reach'){
-      fill = d.rel === 'Our contact' ? 'var(--our)' : d.rel === 'Warm lead' ? 'var(--warm)' : d.rel === 'Cold' ? 'var(--cold)' : 'var(--surface)';
-      stroke = d.rel ? fill : 'var(--muted)';
       const st = rd.get(d.id);
-      op = d.type === 'Key agent' ? (d.rel ? .95 : .5) : st === undefined ? .13 : st === 2 ? .5 : 1;
+      if (isMerch(d)){ fill = st === 0 ? 'var(--our)' : st === 1 ? 'var(--warm)' : st === 2 ? 'var(--cold)' : 'var(--surface)'; stroke = st === undefined ? 'var(--muted)' : fill; op = st === undefined ? .45 : 1; }
+      else { fill = S.seeds.has(d.id) ? 'var(--our)' : 'var(--muted)'; stroke = fill; op = S.seeds.has(d.id) ? 1 : .22; }
     }
     if (d.status === 'Closed' && L !== 'reach') op = Math.min(op, .45);
     s.attr('fill', fill).attr('stroke', stroke).attr('stroke-dasharray', dash);
@@ -316,7 +320,7 @@ function paint(){
     .style('opacity', l => {
       if (L === 'overlap') return sel ? ((l.s === sel.id || l.t === sel.id) ? .7 : .04) : (l.k === 'works' ? .55 : .2);
       if (L === 'network' || L === 'tools') return sel ? ((l.s === sel.id || l.t === sel.id) ? 1 : .06) : (L === 'tools' ? .35 : .8);
-      if (L === 'reach'){ const a = rd.get(l.s), b = rd.get(l.t); return (a !== undefined && b !== undefined && Math.min(a,b) === 0) ? .9 : (a !== undefined && b !== undefined) ? .35 : .06; }
+      if (L === 'reach'){ const a = rd.get(l.s), b = rd.get(l.t); if (l.k === 'agent') return S.seeds.has(l.s) ? .8 : .05; return (a === 0 && b === 1) || (a === 1 && b === 0) ? .7 : (S.seeds.has(l.s) || S.seeds.has(l.t)) && (a !== undefined || b !== undefined) ? .5 : .05; }
     });
   legend(toolCol);
 }
@@ -328,7 +332,7 @@ function legend(toolCol){
   if (S.lens === 'network') el.innerHTML = `<span class="lg">${sw('var(--ink)',null,1)}venue</span><span class="lg">${sw('var(--accent)')}collective</span><span class="lg">${sw('var(--surface)','var(--accent)')}festival</span><span class="lg">${sw('var(--accent)')}artist in 3+ groups</span><span class="lg">${sw('color-mix(in srgb, var(--accent) 45%, var(--surface))')}2 groups</span><span class="lg">${sw('var(--muted)')}1 group</span><span class="lg"><svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--accent)" stroke-width="2" stroke-dasharray="5 3"/></svg>works with</span>` + status + `<span class="lg">size = extra roles</span>`;
   else if (S.lens === 'overlap') el.innerHTML = `<span class="lg">${sw('var(--accent)')}promo group</span><span class="lg">${sw('var(--ink)',null,1)}venue</span><span class="lg"><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" stroke="var(--accent)" stroke-width="4"/></svg>shared artists: thicker = more, number = how many (hover a line for names)</span><span class="lg"><svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--ink)" stroke-width="2" stroke-dasharray="5 3"/></svg>works with</span>` + status;
   else if (S.lens === 'tools') el.innerHTML = [...toolCol].map(([t, c]) => `<span class="lg">${sw(c)}${esc(t)}</span>`).join('') + `<span class="lg">${sw('var(--muted)')}other</span><span class="lg">${sw('var(--surface)','var(--line)')}none found</span><span class="lg">${sw('transparent','var(--ink)')}dotted outline = 2+ tools</span>`;
-  else if (S.lens === 'reach') el.innerHTML = `<span class="lg">${sw('var(--our)')}our contact</span><span class="lg">${sw('var(--warm)')}warm lead</span><span class="lg">${sw('var(--cold)')}cold</span><span class="lg">${sw('var(--surface)','var(--muted)')}not assessed</span><span class="lg">${sw('transparent','var(--accent)')}first merchant (click to toggle)</span><span class="lg">faded = 2 steps away, very faded = out of reach</span><span class="lg"><svg width="12" height="10"><path d="M6 1 L11 9 L1 9 Z" fill="var(--muted)"/></svg>key agent</span>`;
+  else if (S.lens === 'reach') el.innerHTML = `<span class="lg">${sw('var(--our)')}we know them</span><span class="lg">${sw('var(--warm)')}one intro away</span><span class="lg">${sw('var(--cold)')}through a shared artist</span><span class="lg">${sw('var(--surface)','var(--muted)')}not reachable yet</span><span class="lg">${sw('transparent','var(--accent)')}starting point (click any node to add or remove)</span><span class="lg">closed venues are left out</span>`;
 }
 
 // ---------- panel ----------
@@ -382,17 +386,24 @@ function toolsPanel(){
 }
 
 function reachPanel(){
-  const rd = reach(S.seeds), seeds = [...S.seeds].map(id => byId.get(id));
-  const row = (lab, pred, tot) => `<li><span>${lab}</span><span class="num">${cover(rd, 1, pred)} / ${cover(rd, 2, pred)} of ${tot}</span></li>`;
-  const cands = core.filter(n => (isPromo(n) || n.type === 'Venue') && !S.seeds.has(n.id) && n.status !== 'Closed').map(n => {
-    const s2 = new Set(S.seeds); s2.add(n.id); return [n, cover(reach(s2), 1) - cover(rd, 1)]; }).sort((a, b) => b[1] - a[1]).slice(0, 4);
-  const pct = x => Math.round(x / core.length * 100);
-  return `<h2>Reach: pick first merchants</h2><p class="sub">Click nodes on the map to add or remove them. Reach counts direct links in the base (played for, plays at, works with). It shows who is one handshake away, not who would sign up.</p>
-   <div style="display:flex;gap:24px;margin:10px 0"><div><div class="big">${pct(cover(rd,1))}%</div><div class="sub">1 step · <span class="num">${cover(rd,1)}</span> of ${core.length}</div></div><div><div class="big" style="color:var(--muted)">${pct(cover(rd,2))}%</div><div class="sub">2 steps · <span class="num">${cover(rd,2)}</span></div></div></div>
-   <ul class="plain">${row('Venues', n => n.type === 'Venue', venues.length)}${row('Promo groups', isPromo, promos.length)}${row('Artists', n => n.type === 'Artist', artists.length)}</ul>
-   <h3>Selected (${seeds.length})</h3><p>${seeds.map(n => `${nm(n)} ${stChip(n)}`).join(', ') || '<span class="sub">None. Click nodes on the map.</span>'}</p>
-   <div class="btnrow"><button class="btn" data-seeds="our">Start from our contacts</button><button class="btn" data-seeds="clear">Clear</button></div>
-   ${cands.length ? `<h3>Adds the most in one step</h3><ul class="plain">${cands.map(([n, g]) => `<li><span><button class="lnk" data-add="${n.id}">+ ${esc(n.name)}</button> ${stChip(n)}${relChip(n)}</span><span class="num">+${g}</span></li>`).join('')}</ul>` : ''}`;
+  const t = tiers(S.seeds), seeds = [...S.seeds].map(id => byId.get(id));
+  const group = v => merchants.filter(n => v === null ? !t.has(n.id) : t.get(n.id) === v).sort((a, b) => a.name.localeCompare(b.name));
+  const g0 = group(0), g1 = group(1), g2 = group(2), gn = group(null);
+  const list = arr => arr.length ? `<p>${arr.map(n => `${nm(n)}${n.status && n.status !== 'Live' ? ' ' + stChip(n) : ''}`).join(', ')}</p>` : '<p class="sub">None.</p>';
+  const base = within(t);
+  const cands = merchants.filter(n => t.get(n.id) === 1).map(n => { const s2 = new Set(S.seeds); s2.add(n.id); return [n, within(tiers(s2)) - base]; })
+    .filter(x => x[1] > 0).sort((a, b) => b[1] - a[1] || a[0].name.localeCompare(b[0].name)).slice(0, 4);
+  return `<h2>Reach: who we can get to</h2>
+   <p class="sub">Counts only open venues and promo groups, the potential merchants. Starts from everyone marked "Our contact" in the base.</p>
+   <div style="margin:12px 0 4px"><span class="big">${base}</span> <span class="sub" style="font-size:14px">of ${merchants.length} are within one intro</span></div>
+   <p class="sub">We know ${g0.length}, and ${g1.length} more are one intro away.</p>
+   <h3 style="color:var(--our)">We know them · ${g0.length}</h3><p class="sub">They're a starting point, or one of our people is part of them.</p>${list(g0)}
+   <h3 style="color:var(--warm)">One intro away · ${g1.length}</h3><p class="sub">They play at, host or work with someone we know, so that player can introduce us.</p>${list(g1)}
+   <h3 style="color:var(--cold)">Through a shared artist · ${g2.length}</h3><p class="sub">An artist plays for both them and someone we know. A softer way in.</p>${list(g2)}
+   <h3>Not reachable yet · ${gn.length}</h3>${list(gn)}
+   ${cands.length ? `<h3>Best next door to open</h3><p class="sub">Players one intro away who would bring the most others within reach once we know them.</p><ul class="plain">${cands.map(([n, g]) => `<li><span><button class="lnk" data-add="${n.id}">+ ${esc(n.name)}</button> ${relChip(n)}</span><span class="num">+${g}</span></li>`).join('')}</ul>` : ''}
+   <h3>Starting points · ${seeds.length}</h3><p>${seeds.map(n => `${nm(n)} <span class="sub">${n.type.toLowerCase()}</span>`).join(', ') || '<span class="sub">None. Click nodes on the map.</span>'}</p>
+   <div class="btnrow"><button class="btn" data-seeds="our">Reset to our contacts</button><button class="btn" data-seeds="clear">Clear</button></div>`;
 }
 
 function matrix(){
@@ -439,7 +450,7 @@ function go(lens){ S.lens = lens; if (lens === 'reach' || lens === 'matrix') S.s
   if (lens === 'overlap' && S.sel && !(isPromo(byId.get(S.sel)) || byId.get(S.sel).type === 'Venue')) S.sel = null; render(); }
 document.querySelectorAll('nav button').forEach(b => b.addEventListener('click', () => go(b.dataset.lens)));
 nd.on('click', (e, d) => { e.stopPropagation();
-  if (S.lens === 'reach'){ if (!isCore(d)) return; S.seeds.has(d.id) ? S.seeds.delete(d.id) : S.seeds.add(d.id); }
+  if (S.lens === 'reach'){ if (d.type === 'Agency') return; S.seeds.has(d.id) ? S.seeds.delete(d.id) : S.seeds.add(d.id); }
   else S.sel = S.sel === d.id ? null : d.id; render(); })
   .on('keydown', (e, d) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.dispatchEvent(new MouseEvent('click')); } });
 svg.on('click', () => { if (S.sel && S.lens !== 'reach'){ S.sel = null; render(); } });
