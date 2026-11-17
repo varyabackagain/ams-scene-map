@@ -251,6 +251,9 @@ const ourSeeds = () => D.nodes.filter(n => n.rel === 'Our contact' && n.x !== un
 S.seeds = new Set(ourSeeds());
 
 const isMerch = n => isPromo(n) || n.type === 'Venue';
+// tools still in use (rows marked Outdated in Notion stay in the panel, not in counts)
+const cur = n => n.tools.filter(t => t.state !== 'Outdated');
+const open = n => n.status !== 'Closed';
 const merchants = D.nodes.filter(n => isMerch(n) && n.status !== 'Closed');
 // 0 = we know them, 1 = one intro away, 2 = through a shared artist
 function tiers(seeds){
@@ -266,7 +269,7 @@ const within = t => merchants.filter(n => t.has(n.id) && t.get(n.id) <= 1).lengt
 
 // tool ranking within a category, over promo groups + venues + artists
 function ranking(cat){
-  const c = new Map(); D.nodes.forEach(n => n.tools.filter(t => t.cat === cat).forEach(t => c.set(t.name, (c.get(t.name)||0) + 1)));
+  const c = new Map(); D.nodes.forEach(n => cur(n).filter(t => t.cat === cat).forEach(t => c.set(t.name, (c.get(t.name)||0) + 1)));
   return [...c].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 const PAL = ['#d4157a','#2b78d0','#1c9a52','#d39a00','#7b4fd6','#0f9e9e'];
@@ -299,7 +302,7 @@ function paint(){
       fill = d.type === 'Venue' ? 'var(--ink)' : d.type === 'Festival' ? 'var(--surface)' : 'var(--accent)'; stroke = d.type === 'Venue' ? 'var(--ink)' : 'var(--accent)';
       if (sel && !ovFocus.has(d.id)) op = .15;
     } else if (L === 'tools'){
-      const mine = d.tools.filter(t => t.cat === S.cat);
+      const mine = cur(d).filter(t => t.cat === S.cat);
       if (mine.length){ fill = toolCol.get(mine[0].name) || 'var(--muted)'; stroke = mine.length > 1 ? 'var(--ink)' : fill; if (mine.length > 1) dash = '2 2'; }
       else { fill = 'var(--surface)'; stroke = 'var(--line)'; if (d.type === 'Artist' || d.type === 'Agency') op = .35; }
       if (S.tool) op = d.tools.some(t => t.name === S.tool) ? 1 : .12;
@@ -365,7 +368,10 @@ function detail(n){
   h += sect('Key agents', agentsOf(n.id));
   if (n.tools.length){
     const g = d3.group(n.tools, t => t.cat);
-    h += `<h3>Tools</h3><div class="kv">${D.toolCats.filter(c => g.has(c)).map(c => `<span class="sub">${esc(c)}</span><span>${g.get(c).map(t => esc(t.name)).join(', ')}</span>`).join('')}</div>`;
+    const cats = D.toolCats.filter(c => g.has(c)).concat([...g.keys()].filter(c => !D.toolCats.includes(c)));
+    const tag = t => esc(t.name) + (t.via ? ' <span class="sub">(via host)</span>' : '') + (t.state === 'Outdated' ? ' <span class="sub">(outdated)</span>' : '');
+    h += `<h3>Tools</h3><div class="kv">${cats.map(c => `<span class="sub">${esc(c)}</span><span>${g.get(c).map(tag).join(', ')}</span>`).join('')}</div>`;
+    if (n.tools.some(t => t.via)) h += `<p class="sub" style="margin-top:6px">"via host": sells through someone else's account, so the buyer data stays with them.</p>`;
     const miss = ['Ticketing','Merch / shop','Releases','Newsletter / community'].filter(c => !g.has(c));
     if (miss.length && n.type !== 'Artist') h += `<p class="sub" style="margin-top:6px">Nothing found for: ${miss.join(', ')}</p>`;
   } else if (n.type !== 'Key agent') h += `<h3>Tools</h3><p class="sub">None recorded yet.</p>`;
@@ -375,13 +381,16 @@ function detail(n){
 
 function toolsPanel(){
   const rk = ranking(S.cat), max = rk.length ? rk[0][1] : 1;
-  const missing = promos.concat(venues).filter(n => !n.tools.some(t => t.cat === S.cat));
+  const pool = promos.concat(venues).filter(open);
+  const missing = pool.filter(n => !cur(n).some(t => t.cat === S.cat));
+  const multi = pool.map(n => [n, cur(n).filter(t => t.cat === S.cat)]).filter(([, t]) => t.length > 1).sort((a, b) => b[1].length - a[1].length);
   return `<h2>Tools: who uses what</h2><p class="sub">Pick a function. Nodes take the colour of the tool they use for it. Click a tool to see only its users.</p>
    <div class="cats">${D.toolCats.map(c => `<button data-cat="${esc(c)}" aria-pressed="${c === S.cat}">${esc(c)}</button>`).join('')}</div>
    <h3>${esc(S.cat)} · users in the bubble</h3>
    ${rk.length ? rk.map(([t, c]) => `<div class="barrow ${S.tool === t ? 'pick' : ''}"><button class="lnk" data-tool="${esc(t)}">${esc(t)}</button><div class="bar" style="width:${c/max*100}%"></div><span class="num">${c}</span></div>`).join('') : '<p class="sub">Nothing recorded.</p>'}
    ${S.tool ? `<div class="btnrow"><button class="btn" data-tool="">Show all tools</button></div>` : ''}
-   <h3>No ${esc(S.cat.toLowerCase())} found (${missing.length} of ${promos.length + venues.length})</h3><p>${missing.map(nm).join(', ') || '<span class="sub">Everyone has something.</span>'}</p>
+   ${multi.length ? `<h3>Several systems for ${esc(S.cat.toLowerCase())} (${multi.length})</h3><ul class="plain">${multi.map(([n, t]) => `<li><span>${nm(n)} <span class="sub">${t.map(x => esc(x.name) + (x.via ? ' (via host)' : '')).join(', ')}</span></span><span class="num">${t.length}</span></li>`).join('')}</ul>` : ''}
+   <h3>No ${esc(S.cat.toLowerCase())} found (${missing.length} of ${pool.length} open players)</h3><p>${missing.map(nm).join(', ') || '<span class="sub">Everyone has something.</span>'}</p>
    ${S.sel ? '' : ''}`;
 }
 
@@ -409,16 +418,17 @@ function reachPanel(){
 function matrix(){
   const rows = [['Promo groups', promos], ['Venues', venues]];
   const cats = D.toolCats;
-  const cov = c => promos.concat(venues).filter(n => n.tools.some(t => t.cat === c)).length;
-  let h = `<table><thead><tr><th>Player</th>${cats.map(c => `<th>${esc(c)}<br><span class="num" style="font-weight:400">${cov(c)} / ${promos.length + venues.length}</span></th>`).join('')}</tr></thead><tbody>`;
+  const pool = promos.concat(venues).filter(open);
+  const cov = c => pool.filter(n => cur(n).some(t => t.cat === c)).length;
+  let h = `<table><thead><tr><th>Player</th>${cats.map(c => `<th>${esc(c)}<br><span class="num" style="font-weight:400">${cov(c)} / ${pool.length}</span></th>`).join('')}</tr></thead><tbody>`;
   rows.forEach(([lab, arr]) => {
     h += `<tr class="sep"><td colspan="${cats.length + 1}">${lab}</td></tr>`;
-    [...arr].sort((a, b) => a.name.localeCompare(b.name)).forEach(n => {
+    [...arr].filter(open).sort((a, b) => a.name.localeCompare(b.name)).forEach(n => {
       h += `<tr><td><button class="lnk" data-go="${n.id}" data-lens-go="network">${esc(n.name)}</button><br>${stChip(n)}</td>` + cats.map(c => {
-        const t = n.tools.filter(x => x.cat === c); return t.length ? `<td>${t.map(x => `<span class="t">${esc(x.name)}</span>`).join('')}</td>` : '<td class="empty"></td>'; }).join('') + '</tr>';
+        const t = cur(n).filter(x => x.cat === c); return t.length ? `<td>${t.map(x => `<span class="t">${esc(x.name)}${x.via ? ' ↗' : ''}</span>`).join('')}</td>` : '<td class="empty"></td>'; }).join('') + '</tr>';
     });
   });
-  h += `</tbody></table><p class="foot">Hatched cells: nothing found in public sources (sites, Instagram, RA, Linktree). That is either a gap the platform can fill or a tool we haven't spotted yet. Artists' tools (mostly Bandcamp) are in each artist's panel. Snapshot ${D.snapshot}.</p>`;
+  h += `</tbody></table><p class="foot">Closed players and outdated tools are left out. ↗ = sells through someone else's account (the buyer data stays with them). Hatched cells: nothing found in public sources (sites, Instagram, RA, Linktree). That is either a gap the platform can fill or a tool we haven't spotted yet. Artists' tools (mostly Bandcamp) are in each artist's panel. Snapshot ${D.snapshot}.</p>`;
   return h;
 }
 

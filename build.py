@@ -17,8 +17,10 @@ API = "https://api.notion.com/v1"
 VERSION = "2022-06-28"
 HERE = pathlib.Path(__file__).parent
 
+# columns of the Tools lens and the matrix, in order. Categories not listed here
+# (e.g. "Bar / POS") still show in each player's panel, after these.
 TOOL_CATS = ["Ticketing", "Resale", "Merch / shop", "Releases", "Mixes / radio",
-             "Newsletter / community", "Forms", "Social / link hub", "Website"]
+             "Newsletter / community", "Forms", "Social / link hub", "Website", "Listings"]
 
 
 def call(method, path, body=None):
@@ -85,7 +87,8 @@ def main():
     for t in tools:
         pr = t["properties"]
         cat = text(pr.get("Category")) or "Newsletter / community"
-        tool[nid(t["id"])] = {"name": text(pr.get("Name")), "cat": cat}
+        state = text(pr.get("State")) or None
+        tool[nid(t["id"])] = {"name": text(pr.get("Name")), "cat": cat, "state": state}
 
     rows = {}
     for e in ents:
@@ -98,7 +101,10 @@ def main():
             "notion": e["url"],
             "plays": rel(pr.get("Plays at")), "works": rel(pr.get("Works with")),
             "signed": rel(pr.get("Signed to")), "part": rel(pr.get("Part of")),
-            "tools": [tool[t] for t in rel(pr.get("Tools")) if t in tool],
+            # "Tools" = the player owns the account; "Sells through tools" = it sells
+            # through someone else's account of that tool (e.g. a collective in the club's shop)
+            "tools": [tool[t] for t in rel(pr.get("Tools")) if t in tool]
+                     + [dict(tool[t], via=True) for t in rel(pr.get("Sells through tools")) if t in tool],
             "bubbles": [bubble_name[b] for b in rel(pr.get("Bubbles")) if b in bubble_name],
         }
 
